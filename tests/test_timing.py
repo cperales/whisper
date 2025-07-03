@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 import scipy.ndimage
-import torch
+import numpy as np
 
 from whisper.timing import dtw_cpu, dtw_cuda, median_filter
 
@@ -52,21 +52,9 @@ def test_dtw(N: int, M: int):
     assert np.allclose(trace, dtw_trace)
 
 
-@pytest.mark.requires_cuda
-@pytest.mark.parametrize("N, M", sizes)
-def test_dtw_cuda_equivalence(N: int, M: int):
-    x_numpy = np.random.randn(N, M).astype(np.float32)
-    x_cuda = torch.from_numpy(x_numpy).cuda()
-
-    trace_cpu = dtw_cpu(x_numpy)
-    trace_cuda = dtw_cuda(x_cuda)
-
-    assert np.allclose(trace_cpu, trace_cuda)
-
-
 @pytest.mark.parametrize("shape", shapes)
 def test_median_filter(shape):
-    x = torch.randn(*shape)
+    x = np.random.rand(*shape)
 
     for filter_width in [3, 5, 7, 13]:
         filtered = median_filter(x, filter_width)
@@ -87,7 +75,7 @@ def test_median_filter(shape):
 @pytest.mark.requires_cuda
 @pytest.mark.parametrize("shape", shapes)
 def test_median_filter_equivalence(shape):
-    x = torch.randn(*shape)
+    x = np.random.rand(*shape)
 
     for filter_width in [3, 5, 7, 13]:
         filtered_cpu = median_filter(x, filter_width)

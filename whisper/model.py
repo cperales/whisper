@@ -5,21 +5,14 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Tuple
 
 import numpy as np
-import torch
-import torch.nn.functional as F
-from torch import Tensor, nn
+import onnxruntime
 
 from .decoding import decode as decode_function
 from .decoding import detect_language as detect_language_function
 from .transcribe import transcribe as transcribe_function
 
-try:
-    from torch.nn.functional import scaled_dot_product_attention
-
-    SDPA_AVAILABLE = True
-except (ImportError, RuntimeError, OSError):
-    scaled_dot_product_attention = None
-    SDPA_AVAILABLE = False
+scaled_dot_product_attention = None
+SDPA_AVAILABLE = False
 
 
 @dataclass
@@ -37,12 +30,12 @@ class ModelDimensions:
 
 
 class LayerNorm(nn.LayerNorm):
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: np.ndarray) -> np.ndarray:
         return super().forward(x.float()).type(x.dtype)
 
 
 class Linear(nn.Linear):
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: np.ndarray) -> np.ndarray:
         return F.linear(
             x,
             self.weight.to(x.dtype),
@@ -52,8 +45,8 @@ class Linear(nn.Linear):
 
 class Conv1d(nn.Conv1d):
     def _conv_forward(
-        self, x: Tensor, weight: Tensor, bias: Optional[Tensor]
-    ) -> Tensor:
+        self, x: np.ndarray, weight: np.ndarray, bias: Optional[np.ndarray]
+    ) -> np.ndarray:
         return super()._conv_forward(
             x, weight.to(x.dtype), None if bias is None else bias.to(x.dtype)
         )
@@ -63,9 +56,9 @@ def sinusoids(length, channels, max_timescale=10000):
     """Returns sinusoids for positional embedding"""
     assert channels % 2 == 0
     log_timescale_increment = np.log(max_timescale) / (channels // 2 - 1)
-    inv_timescales = torch.exp(-log_timescale_increment * torch.arange(channels // 2))
-    scaled_time = torch.arange(length)[:, np.newaxis] * inv_timescales[np.newaxis, :]
-    return torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim=1)
+    inv_timescales = np.exp(-log_timescale_increment * np.arange(channels // 2))
+    scaled_time = np.arange(length)[:, np.newaxis] * inv_timescales[np.newaxis, :]
+    return np.cat([np.sin(scaled_time), np.cos(scaled_time)], dim=1)
 
 
 @contextmanager
@@ -91,9 +84,9 @@ class MultiHeadAttention(nn.Module):
 
     def forward(
         self,
-        x: Tensor,
-        xa: Optional[Tensor] = None,
-        mask: Optional[Tensor] = None,
+        x: np.ndarray,
+        xa: Optional[np.ndarray] = None,
+        mask: Optional[np.ndarray] = None,
         kv_cache: Optional[dict] = None,
     ):
         q = self.query(x)
@@ -112,8 +105,8 @@ class MultiHeadAttention(nn.Module):
         return self.out(wv), qk
 
     def qkv_attention(
-        self, q: Tensor, k: Tensor, v: Tensor, mask: Optional[Tensor] = None
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        self, q: np.ndarray, k: np.ndarray, v: np.ndarray, mask: Optional[np.ndarray] = None
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         n_batch, n_ctx, n_state = q.shape
         scale = (n_state // self.n_head) ** -0.25
         q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
@@ -159,9 +152,9 @@ class ResidualAttentionBlock(nn.Module):
 
     def forward(
         self,
-        x: Tensor,
-        xa: Optional[Tensor] = None,
-        mask: Optional[Tensor] = None,
+        x: np.ndarray,
+        xa: Optional[np.ndarray] = None,
+        mask: Optional[np.ndarray] = None,
         kv_cache: Optional[dict] = None,
     ):
         x = x + self.attn(self.attn_ln(x), mask=mask, kv_cache=kv_cache)[0]
@@ -185,9 +178,9 @@ class AudioEncoder(nn.Module):
         )
         self.ln_post = LayerNorm(n_state)
 
-    def forward(self, x: Tensor):
+    def forward(self, x: np.ndarray):
         """
-        x : torch.Tensor, shape = (batch_size, n_mels, n_ctx)
+        x : np.ndarray, shape = (batch_size, n_mels, n_ctx)
             the mel spectrogram of the audio
         """
         x = F.gelu(self.conv1(x))
@@ -211,7 +204,7 @@ class TextDecoder(nn.Module):
         super().__init__()
 
         self.token_embedding = nn.Embedding(n_vocab, n_state)
-        self.positional_embedding = nn.Parameter(torch.empty(n_ctx, n_state))
+        self.positional_embedding = nn.Parameter(np.empty(n_ctx, n_state))
 
         self.blocks: Iterable[ResidualAttentionBlock] = nn.ModuleList(
             [
@@ -221,14 +214,14 @@ class TextDecoder(nn.Module):
         )
         self.ln = LayerNorm(n_state)
 
-        mask = torch.empty(n_ctx, n_ctx).fill_(-np.inf).triu_(1)
+        mask = np.empty(n_ctx, n_ctx).fill_(-np.inf).triu_(1)
         self.register_buffer("mask", mask, persistent=False)
 
-    def forward(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None):
+    def forward(self, x: np.ndarray, xa: np.ndarray, kv_cache: Optional[dict] = None):
         """
-        x : torch.LongTensor, shape = (batch_size, <= n_ctx)
+        x : np.ndarray, shape = (batch_size, <= n_ctx)
             the text tokens
-        xa : torch.Tensor, shape = (batch_size, n_audio_ctx, n_audio_state)
+        xa : np.ndarray, shape = (batch_size, n_audio_ctx, n_audio_state)
             the encoded audio features to be attended on
         """
         offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
@@ -243,7 +236,7 @@ class TextDecoder(nn.Module):
 
         x = self.ln(x)
         logits = (
-            x @ torch.transpose(self.token_embedding.weight.to(x.dtype), 0, 1)
+            x @ np.transpose(self.token_embedding.weight.to(x.dtype), 0, 1)
         ).float()
 
         return logits
@@ -269,8 +262,8 @@ class Whisper(nn.Module):
         )
         # use the last half among the decoder layers for time alignment by default;
         # to use a specific set of heads, see `set_alignment_heads()` below.
-        all_heads = torch.zeros(
-            self.dims.n_text_layer, self.dims.n_text_head, dtype=torch.bool
+        all_heads = np.zeros(
+            self.dims.n_text_layer, self.dims.n_text_head, dtype=np.bool
         )
         all_heads[self.dims.n_text_layer // 2 :] = True
         self.register_buffer("alignment_heads", all_heads.to_sparse(), persistent=False)
@@ -279,20 +272,20 @@ class Whisper(nn.Module):
         array = np.frombuffer(
             gzip.decompress(base64.b85decode(dump)), dtype=bool
         ).copy()
-        mask = torch.from_numpy(array).reshape(
+        mask = np.array(array).reshape(
             self.dims.n_text_layer, self.dims.n_text_head
         )
         self.register_buffer("alignment_heads", mask.to_sparse(), persistent=False)
 
-    def embed_audio(self, mel: torch.Tensor):
+    def embed_audio(self, mel: np.ndarray):
         return self.encoder(mel)
 
-    def logits(self, tokens: torch.Tensor, audio_features: torch.Tensor):
+    def logits(self, tokens: np.ndarray, audio_features: np.ndarray):
         return self.decoder(tokens, audio_features)
 
     def forward(
-        self, mel: torch.Tensor, tokens: torch.Tensor
-    ) -> Dict[str, torch.Tensor]:
+        self, mel: np.ndarray, tokens: np.ndarray
+    ) -> Dict[str, np.ndarray]:
         return self.decoder(tokens, self.encoder(mel))
 
     @property
@@ -316,7 +309,7 @@ class Whisper(nn.Module):
 
         Returns
         -------
-        cache : Dict[nn.Module, torch.Tensor]
+        cache : Dict[nn.Module, np.ndarray]
             A dictionary object mapping the key/value projection modules to its cache
         hooks : List[RemovableHandle]
             List of PyTorch RemovableHandle objects to stop the hooks to be called
@@ -329,7 +322,7 @@ class Whisper(nn.Module):
                 # save as-is, for the first token or cross attention
                 cache[module] = output
             else:
-                cache[module] = torch.cat([cache[module], output], dim=1).detach()
+                cache[module] = np.cat([cache[module], output], dim=1).detach()
             return cache[module]
 
         def install_hooks(layer: nn.Module):

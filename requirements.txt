@@ -1,6 +1,6 @@
 numba
 numpy
-torch
+onnxruntime
 tqdm
 more-itertools
 tiktoken

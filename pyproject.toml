@@ -26,7 +26,7 @@ dependencies = [
   "numba",
   "numpy",
   "tiktoken",
-  "torch",
+  "onnxruntime",
   "tqdm",
   "triton>=2; (platform_machine=='x86_64' and sys_platform=='linux') or sys_platform=='linux2'",
 ]

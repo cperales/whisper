@@ -5,8 +5,8 @@ import urllib
 import warnings
 from typing import List, Optional, Union
 
-import torch
 from tqdm import tqdm
+import onnxruntime
 
 from .audio import load_audio, log_mel_spectrogram, pad_or_trim
 from .decoding import DecodingOptions, DecodingResult, decode, detect_language
@@ -102,7 +102,7 @@ def available_models() -> List[str]:
 
 def load_model(
     name: str,
-    device: Optional[Union[str, torch.device]] = None,
+    device: str = "cpu",
     download_root: str = None,
     in_memory: bool = False,
 ) -> Whisper:
@@ -114,8 +114,8 @@ def load_model(
     name : str
         one of the official model names listed by `whisper.available_models()`, or
         path to a model checkpoint containing the model dimensions and the model state_dict.
-    device : Union[str, torch.device]
-        the PyTorch device to put the model into
+    device : str
+        only "cpu"
     download_root: str
         path to download the model files; by default, it uses "~/.cache/whisper"
     in_memory: bool
@@ -128,7 +128,7 @@ def load_model(
     """
 
     if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = "cpu"
     if download_root is None:
         default = os.path.join(os.path.expanduser("~"), ".cache")
         download_root = os.path.join(os.getenv("XDG_CACHE_HOME", default), "whisper")
@@ -147,8 +147,7 @@ def load_model(
     with (
         io.BytesIO(checkpoint_file) if in_memory else open(checkpoint_file, "rb")
     ) as fp:
-        kwargs = {"weights_only": True} if torch.__version__ >= "1.13" else {}
-        checkpoint = torch.load(fp, map_location=device, **kwargs)
+        checkpoint = onnxruntime.sessionInference(fp)
     del checkpoint_file
 
     dims = ModelDimensions(**checkpoint["dims"])

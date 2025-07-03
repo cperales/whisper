@@ -2,10 +2,6 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import torch
-import torch.nn.functional as F
-from torch import Tensor
-from torch.distributions import Categorical
 
 from .audio import CHUNK_LENGTH
 from .tokenizer import Tokenizer, get_tokenizer
@@ -14,11 +10,9 @@ from .utils import compression_ratio
 if TYPE_CHECKING:
     from .model import Whisper
 
-
-@torch.no_grad()
 def detect_language(
-    model: "Whisper", mel: Tensor, tokenizer: Tokenizer = None
-) -> Tuple[Tensor, List[dict]]:
+    model: "Whisper", mel: np.ndarray, tokenizer: Tokenizer = None
+) -> Tuple[np.ndarray, List[dict]]:
     """
     Detect the spoken language in the audio, and return them as list of strings, along with the ids
     of the most probable language tokens and the probability distribution over all language tokens.
@@ -26,7 +20,7 @@ def detect_language(
 
     Returns
     -------
-    language_tokens : Tensor, shape = (n_audio,)
+    language_tokens : np.ndarray, shape = (n_audio,)
         ids of the most probable language tokens, which appears after the startoftranscript token.
     language_probs : List[Dict[str, float]], length = n_audio
         list of dictionaries containing the probability distribution over all languages.
@@ -53,11 +47,11 @@ def detect_language(
 
     # forward pass using a single token, startoftranscript
     n_audio = mel.shape[0]
-    x = torch.tensor([[tokenizer.sot]] * n_audio).to(mel.device)  # [n_audio, 1]
+    x = np.array([[tokenizer.sot]] * n_audio).to(mel.device)  # [n_audio, 1]
     logits = model.logits(x, mel)[:, 0]
 
     # collect detected languages; suppress all non-language tokens
-    mask = torch.ones(logits.shape[-1], dtype=torch.bool)
+    mask = np.ones(logits.shape[-1], dtype=np.bool)
     mask[list(tokenizer.all_language_tokens)] = False
     logits[:, mask] = -np.inf
     language_tokens = logits.argmax(dim=-1)
@@ -116,7 +110,7 @@ class DecodingOptions:
 
 @dataclass(frozen=True)
 class DecodingResult:
-    audio_features: Tensor
+    audio_features: np.ndarray
     language: str
     language_probs: Optional[Dict[str, float]] = None
     tokens: List[int] = field(default_factory=list)
@@ -128,7 +122,7 @@ class DecodingResult:
 
 
 class Inference:
-    def logits(self, tokens: Tensor, audio_features: Tensor) -> Tensor:
+    def logits(self, tokens: np.ndarray, audio_features: np.ndarray) -> np.ndarray:
         """Perform a forward pass on the decoder and return per-token logits"""
         raise NotImplementedError
 
@@ -152,7 +146,7 @@ class PyTorchInference(Inference):
         value_modules = [block.attn.value for block in self.model.decoder.blocks]
         self.kv_modules = key_modules + value_modules
 
-    def logits(self, tokens: Tensor, audio_features: Tensor) -> Tensor:
+    def logits(self, tokens: np.ndarray, audio_features: np.ndarray) -> np.ndarray:
         if not self.kv_cache:
             self.kv_cache, self.hooks = self.model.install_kv_cache_hooks()
 
@@ -178,7 +172,7 @@ class PyTorchInference(Inference):
 
 class SequenceRanker:
     def rank(
-        self, tokens: List[List[Tensor]], sum_logprobs: List[List[float]]
+        self, tokens: List[List[np.ndarray]], sum_logprobs: List[List[float]]
     ) -> List[int]:
         """
         Given a list of groups of samples and their cumulative log probabilities,
@@ -196,7 +190,7 @@ class MaximumLikelihoodRanker(SequenceRanker):
     def __init__(self, length_penalty: Optional[float]):
         self.length_penalty = length_penalty
 
-    def rank(self, tokens: List[List[Tensor]], sum_logprobs: List[List[float]]):
+    def rank(self, tokens: List[List[np.ndarray]], sum_logprobs: List[List[float]]):
         def scores(logprobs, lengths):
             result = []
             for logprob, length in zip(logprobs, lengths):
@@ -218,24 +212,24 @@ class TokenDecoder:
         """Initialize any stateful variables for decoding a new sequence"""
 
     def update(
-        self, tokens: Tensor, logits: Tensor, sum_logprobs: Tensor
-    ) -> Tuple[Tensor, bool]:
+        self, tokens: np.ndarray, logits: np.ndarray, sum_logprobs: np.ndarray
+    ) -> Tuple[np.ndarray, bool]:
         """Specify how to select the next token, based on the current trace and logits
 
         Parameters
         ----------
-        tokens : Tensor, shape = (n_batch, current_sequence_length)
+        tokens : np.ndarray, shape = (n_batch, current_sequence_length)
             all tokens in the context so far, including the prefix and sot_sequence tokens
 
-        logits : Tensor, shape = (n_batch, vocab_size)
+        logits : np.ndarray, shape = (n_batch, vocab_size)
             per-token logits of the probability distribution at the current step
 
-        sum_logprobs : Tensor, shape = (n_batch)
+        sum_logprobs : np.ndarray, shape = (n_batch)
             cumulative log probabilities for each sequence
 
         Returns
         -------
-        tokens : Tensor, shape = (n_batch, current_sequence_length + 1)
+        tokens : np.ndarray, shape = (n_batch, current_sequence_length + 1)
             the tokens, appended with the selected next token
 
         completed : bool
@@ -245,22 +239,22 @@ class TokenDecoder:
         raise NotImplementedError
 
     def finalize(
-        self, tokens: Tensor, sum_logprobs: Tensor
-    ) -> Tuple[Sequence[Sequence[Tensor]], List[List[float]]]:
+        self, tokens: np.ndarray, sum_logprobs: np.ndarray
+    ) -> Tuple[Sequence[Sequence[np.ndarray]], List[List[float]]]:
         """Finalize search and return the final candidate sequences
 
         Parameters
         ----------
-        tokens : Tensor, shape = (n_audio, n_group, current_sequence_length)
+        tokens : np.ndarray, shape = (n_audio, n_group, current_sequence_length)
             all tokens in the context so far, including the prefix and sot_sequence
 
-        sum_logprobs : Tensor, shape = (n_audio, n_group)
+        sum_logprobs : np.ndarray, shape = (n_audio, n_group)
             cumulative log probabilities for each sequence
 
         Returns
         -------
-        tokens : Sequence[Sequence[Tensor]], length = n_audio
-            sequence of Tensors containing candidate token sequences, for each audio input
+        tokens : Sequence[Sequence[np.ndarray]], length = n_audio
+            sequence of np.ndarrays containing candidate token sequences, for each audio input
 
         sum_logprobs : List[List[float]], length = n_audio
             sequence of cumulative log probabilities corresponding to the above
@@ -275,24 +269,24 @@ class GreedyDecoder(TokenDecoder):
         self.eot = eot
 
     def update(
-        self, tokens: Tensor, logits: Tensor, sum_logprobs: Tensor
-    ) -> Tuple[Tensor, bool]:
+        self, tokens: np.ndarray, logits: np.ndarray, sum_logprobs: np.ndarray
+    ) -> Tuple[np.ndarray, bool]:
         if self.temperature == 0:
             next_tokens = logits.argmax(dim=-1)
         else:
             next_tokens = Categorical(logits=logits / self.temperature).sample()
 
         logprobs = F.log_softmax(logits.float(), dim=-1)
-        current_logprobs = logprobs[torch.arange(logprobs.shape[0]), next_tokens]
+        current_logprobs = logprobs[np.arange(logprobs.shape[0]), next_tokens]
         sum_logprobs += current_logprobs * (tokens[:, -1] != self.eot)
 
         next_tokens[tokens[:, -1] == self.eot] = self.eot
-        tokens = torch.cat([tokens, next_tokens[:, None]], dim=-1)
+        tokens = np.cat([tokens, next_tokens[:, None]], dim=-1)
 
         completed = (tokens[:, -1] == self.eot).all()
         return tokens, completed
 
-    def finalize(self, tokens: Tensor, sum_logprobs: Tensor):
+    def finalize(self, tokens: np.ndarray, sum_logprobs: np.ndarray):
         # make sure each sequence has at least one EOT token at the end
         tokens = F.pad(tokens, (0, 1), value=self.eot)
         return tokens, sum_logprobs.tolist()
@@ -321,8 +315,8 @@ class BeamSearchDecoder(TokenDecoder):
         self.finished_sequences = None
 
     def update(
-        self, tokens: Tensor, logits: Tensor, sum_logprobs: Tensor
-    ) -> Tuple[Tensor, bool]:
+        self, tokens: np.ndarray, logits: np.ndarray, sum_logprobs: np.ndarray
+    ) -> Tuple[np.ndarray, bool]:
         if tokens.shape[0] % self.beam_size != 0:
             raise ValueError(f"{tokens.shape}[0] % {self.beam_size} != 0")
 
@@ -361,7 +355,7 @@ class BeamSearchDecoder(TokenDecoder):
 
             finished_sequences.append(finished)
 
-        tokens = torch.tensor(next_tokens, device=tokens.device)
+        tokens = np.array(next_tokens, device=tokens.device)
         self.inference.rearrange_kv_cache(source_indices)
 
         # add newly finished sequences to self.finished_sequences
@@ -381,7 +375,7 @@ class BeamSearchDecoder(TokenDecoder):
         )
         return tokens, completed
 
-    def finalize(self, preceding_tokens: Tensor, sum_logprobs: Tensor):
+    def finalize(self, preceding_tokens: np.ndarray, sum_logprobs: np.ndarray):
         # collect all finished sequences, including patience, and add unfinished ones if not enough
         sum_logprobs = sum_logprobs.cpu()
         for i, sequences in enumerate(self.finished_sequences):
@@ -394,8 +388,8 @@ class BeamSearchDecoder(TokenDecoder):
                     if len(sequences) >= self.beam_size:
                         break
 
-        tokens: List[List[Tensor]] = [
-            [torch.tensor(seq) for seq in sequences.keys()]
+        tokens: List[List[np.ndarray]] = [
+            [np.array(seq) for seq in sequences.keys()]
             for sequences in self.finished_sequences
         ]
         sum_logprobs: List[List[float]] = [
@@ -405,15 +399,15 @@ class BeamSearchDecoder(TokenDecoder):
 
 
 class LogitFilter:
-    def apply(self, logits: Tensor, tokens: Tensor) -> None:
+    def apply(self, logits: np.ndarray, tokens: np.ndarray) -> None:
         """Apply any filtering or masking to logits in-place
 
         Parameters
         ----------
-        logits : Tensor, shape = (n_batch, vocab_size)
+        logits : np.ndarray, shape = (n_batch, vocab_size)
             per-token logits of the probability distribution at the current step
 
-        tokens : Tensor, shape = (n_batch, current_sequence_length)
+        tokens : np.ndarray, shape = (n_batch, current_sequence_length)
             all tokens in the context so far, including the prefix and sot_sequence tokens
 
         """
@@ -425,7 +419,7 @@ class SuppressBlank(LogitFilter):
         self.tokenizer = tokenizer
         self.sample_begin = sample_begin
 
-    def apply(self, logits: Tensor, tokens: Tensor):
+    def apply(self, logits: np.ndarray, tokens: np.ndarray):
         if tokens.shape[1] == self.sample_begin:
             logits[:, self.tokenizer.encode(" ") + [self.tokenizer.eot]] = -np.inf
 
@@ -434,7 +428,7 @@ class SuppressTokens(LogitFilter):
     def __init__(self, suppress_tokens: Sequence[int]):
         self.suppress_tokens = list(suppress_tokens)
 
-    def apply(self, logits: Tensor, tokens: Tensor):
+    def apply(self, logits: np.ndarray, tokens: np.ndarray):
         logits[:, self.suppress_tokens] = -np.inf
 
 
@@ -449,7 +443,7 @@ class ApplyTimestampRules(LogitFilter):
         self.sample_begin = sample_begin
         self.max_initial_timestamp_index = max_initial_timestamp_index
 
-    def apply(self, logits: Tensor, tokens: Tensor):
+    def apply(self, logits: np.ndarray, tokens: np.ndarray):
         # suppress <|notimestamps|> which is handled by without_timestamps
         if self.tokenizer.no_timestamps is not None:
             logits[:, self.tokenizer.no_timestamps] = -np.inf
@@ -641,7 +635,7 @@ class DecodingTask:
 
         return tuple(sorted(set(suppress_tokens)))
 
-    def _get_audio_features(self, mel: Tensor):
+    def _get_audio_features(self, mel: np.ndarray):
         if self.options.fp16:
             mel = mel.half()
 
@@ -654,16 +648,9 @@ class DecodingTask:
         else:
             audio_features = self.model.encoder(mel)
 
-        if audio_features.dtype != (
-            torch.float16 if self.options.fp16 else torch.float32
-        ):
-            return TypeError(
-                f"audio_features has an incorrect dtype: {audio_features.dtype}"
-            )
-
         return audio_features
 
-    def _detect_language(self, audio_features: Tensor, tokens: Tensor):
+    def _detect_language(self, audio_features: np.ndarray, tokens: np.ndarray):
         languages = [self.options.language] * audio_features.shape[0]
         lang_probs = None
 
@@ -677,9 +664,9 @@ class DecodingTask:
 
         return languages, lang_probs
 
-    def _main_loop(self, audio_features: Tensor, tokens: Tensor):
+    def _main_loop(self, audio_features: np.ndarray, tokens: np.ndarray):
         n_batch = tokens.shape[0]
-        sum_logprobs: Tensor = torch.zeros(n_batch, device=audio_features.device)
+        sum_logprobs: np.ndarray = np.zeros(n_batch, device=audio_features.device)
         no_speech_probs = [np.nan] * n_batch
 
         try:
@@ -709,14 +696,13 @@ class DecodingTask:
 
         return tokens, sum_logprobs, no_speech_probs
 
-    @torch.no_grad()
-    def run(self, mel: Tensor) -> List[DecodingResult]:
+    def run(self, mel: np.ndarray) -> List[DecodingResult]:
         self.decoder.reset()
         tokenizer: Tokenizer = self.tokenizer
         n_audio: int = mel.shape[0]
 
-        audio_features: Tensor = self._get_audio_features(mel)  # encoder forward pass
-        tokens: Tensor = torch.tensor([self.initial_tokens]).repeat(n_audio, 1)
+        audio_features: np.ndarray = self._get_audio_features(mel)  # encoder forward pass
+        tokens: np.ndarray = np.array([self.initial_tokens]).repeat(n_audio, 1)
 
         # detect language if requested, overwriting the language token
         languages, language_probs = self._detect_language(audio_features, tokens)
@@ -746,7 +732,7 @@ class DecodingTask:
 
         # get the final candidates for each group, and slice between the first sampled token and EOT
         tokens, sum_logprobs = self.decoder.finalize(tokens, sum_logprobs)
-        tokens: List[List[Tensor]] = [
+        tokens: List[List[np.ndarray]] = [
             [t[self.sample_begin : (t == tokenizer.eot).nonzero()[0, 0]] for t in s]
             for s in tokens
         ]
@@ -789,10 +775,9 @@ class DecodingTask:
         ]
 
 
-@torch.no_grad()
 def decode(
     model: "Whisper",
-    mel: Tensor,
+    mel: np.ndarray,
     options: DecodingOptions = DecodingOptions(),
     **kwargs,
 ) -> Union[DecodingResult, List[DecodingResult]]:
@@ -804,7 +789,7 @@ def decode(
     model: Whisper
         the Whisper model instance
 
-    mel: torch.Tensor, shape = (80, 3000) or (*, 80, 3000)
+    mel: np.ndarray, shape = (80, 3000) or (*, 80, 3000)
         A tensor containing the Mel spectrogram(s)
 
     options: DecodingOptions

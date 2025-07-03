@@ -6,9 +6,6 @@ from typing import TYPE_CHECKING, List
 
 import numba
 import numpy as np
-import torch
-import torch.nn.functional as F
-
 from .audio import HOP_LENGTH, SAMPLE_RATE, TOKENS_PER_SECOND
 from .tokenizer import Tokenizer
 
@@ -16,7 +13,7 @@ if TYPE_CHECKING:
     from .model import Whisper
 
 
-def median_filter(x: torch.Tensor, filter_width: int):
+def median_filter(x: np.ndarray, filter_width: int):
     """Apply a median filter of width `filter_width` along the last dimension of `x`"""
     pad_width = filter_width // 2
     if x.shape[-1] <= pad_width:
@@ -45,7 +42,7 @@ def median_filter(x: torch.Tensor, filter_width: int):
             )
 
     if result is None:
-        # sort() is faster than torch.median (https://github.com/pytorch/pytorch/issues/51450)
+        # sort() is faster than np.median (https://github.com/pytorch/pytorch/issues/51450)
         result = x.unfold(-1, filter_width, 1).sort()[0][..., filter_width // 2]
 
     if ndim <= 2:
@@ -115,10 +112,10 @@ def dtw_cuda(x, BLOCK_SIZE=1024):
         F.pad(x, (0, M + 1), value=np.inf).flatten()[: M * (N + M)].reshape(M, N + M)
     )
     x_skew = x_skew.T.contiguous()
-    cost = torch.ones(N + M + 2, M + 2) * np.inf
+    cost = np.ones(N + M + 2, M + 2) * np.inf
     cost[0, 0] = 0
     cost = cost.to(x.device)
-    trace = torch.zeros_like(cost, dtype=torch.int32)
+    trace = np.zeros_like(cost, dtype=np.int32)
 
     dtw_kernel[(1,)](
         cost,
@@ -138,7 +135,7 @@ def dtw_cuda(x, BLOCK_SIZE=1024):
     return backtrace(trace.cpu().numpy())
 
 
-def dtw(x: torch.Tensor) -> np.ndarray:
+def dtw(x: np.ndarray) -> np.ndarray:
     if x.is_cuda:
         try:
             return dtw_cuda(x)
@@ -164,7 +161,7 @@ def find_alignment(
     model: "Whisper",
     tokenizer: Tokenizer,
     text_tokens: List[int],
-    mel: torch.Tensor,
+    mel: np.ndarray,
     num_frames: int,
     *,
     medfilt_width: int = 7,
@@ -173,7 +170,7 @@ def find_alignment(
     if len(text_tokens) == 0:
         return []
 
-    tokens = torch.tensor(
+    tokens = np.array(
         [
             *tokenizer.sot_sequence,
             tokenizer.no_timestamps,
@@ -193,21 +190,20 @@ def find_alignment(
 
     from .model import disable_sdpa
 
-    with torch.no_grad(), disable_sdpa():
-        logits = model(mel.unsqueeze(0), tokens.unsqueeze(0))[0]
-        sampled_logits = logits[len(tokenizer.sot_sequence) :, : tokenizer.eot]
-        token_probs = sampled_logits.softmax(dim=-1)
-        text_token_probs = token_probs[np.arange(len(text_tokens)), text_tokens]
-        text_token_probs = text_token_probs.tolist()
+    logits = model(mel.unsqueeze(0), tokens.unsqueeze(0))[0]
+    sampled_logits = logits[len(tokenizer.sot_sequence) :, : tokenizer.eot]
+    token_probs = sampled_logits.softmax(dim=-1)
+    text_token_probs = token_probs[np.arange(len(text_tokens)), text_tokens]
+    text_token_probs = text_token_probs.tolist()
 
     for hook in hooks:
         hook.remove()
 
     # heads * tokens * frames
-    weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
+    weights = np.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
     weights = weights[:, :, : num_frames // 2]
     weights = (weights * qk_scale).softmax(dim=-1)
-    std, mean = torch.std_mean(weights, dim=-2, keepdim=True, unbiased=False)
+    std, mean = np.std_mean(weights, dim=-2, keepdim=True, unbiased=False)
     weights = (weights - mean) / std
     weights = median_filter(weights, medfilt_width)
 
@@ -281,7 +277,7 @@ def add_word_timestamps(
     segments: List[dict],
     model: "Whisper",
     tokenizer: Tokenizer,
-    mel: torch.Tensor,
+    mel: np.ndarray,
     num_frames: int,
     prepend_punctuations: str = "\"'“¿([{-",
     append_punctuations: str = "\"'.。,，!！?？:：”)]}、",
