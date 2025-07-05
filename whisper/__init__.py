@@ -144,17 +144,13 @@ def load_model(
             f"Model {name} not found; available models = {available_models()}"
         )
 
-    with (
-        io.BytesIO(checkpoint_file) if in_memory else open(checkpoint_file, "rb")
-    ) as fp:
-        checkpoint = onnxruntime.sessionInference(fp)
-    del checkpoint_file
+    if in_memory:
+        session = onnxruntime.InferenceSession(checkpoint_file)
+    else:
+        session = onnxruntime.InferenceSession(checkpoint_file)
 
-    dims = ModelDimensions(**checkpoint["dims"])
-    model = Whisper(dims)
-    model.load_state_dict(checkpoint["model_state_dict"])
-
+    model = Whisper(session)
     if alignment_heads is not None:
         model.set_alignment_heads(alignment_heads)
 
-    return model.to(device)
+    return model
