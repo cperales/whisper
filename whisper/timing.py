@@ -4,6 +4,8 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
+import scipy.ndimage
+
 import numba
 import numpy as np
 from .audio import HOP_LENGTH, SAMPLE_RATE, TOKENS_PER_SECOND
@@ -14,41 +16,22 @@ if TYPE_CHECKING:
 
 
 def median_filter(x: np.ndarray, filter_width: int):
-    """Apply a median filter of width `filter_width` along the last dimension of `x`"""
-    pad_width = filter_width // 2
-    if x.shape[-1] <= pad_width:
-        # F.pad requires the padding width to be smaller than the input dimension
+    """Apply a median filter of width ``filter_width`` along the last dimension of ``x``."""
+    assert filter_width > 0 and filter_width % 2 == 1, "`filter_width` should be an odd number"
+
+    pad = filter_width // 2
+    if x.shape[-1] <= pad:
         return x
 
-    if (ndim := x.ndim) <= 2:
-        # `F.pad` does not support 1D or 2D inputs for reflect padding but supports 3D and 4D
-        x = x[None, None, :]
-
-    assert (
-        filter_width > 0 and filter_width % 2 == 1
-    ), "`filter_width` should be an odd number"
-
-    result = None
-    x = F.pad(x, (filter_width // 2, filter_width // 2, 0, 0), mode="reflect")
-    if x.is_cuda:
-        try:
-            from .triton_ops import median_filter_cuda
-
-            result = median_filter_cuda(x, filter_width)
-        except (RuntimeError, subprocess.CalledProcessError):
-            warnings.warn(
-                "Failed to launch Triton kernels, likely due to missing CUDA toolkit; "
-                "falling back to a slower median kernel implementation..."
-            )
-
-    if result is None:
-        # sort() is faster than np.median (https://github.com/pytorch/pytorch/issues/51450)
-        result = x.unfold(-1, filter_width, 1).sort()[0][..., filter_width // 2]
-
-    if ndim <= 2:
-        result = result[0, 0]
-
-    return result
+    padded = np.pad(
+        x,
+        [(0, 0)] * (x.ndim - 1) + [(pad, pad)],
+        mode="reflect",
+    )
+    filtered = scipy.ndimage.median_filter(
+        padded, [1] * (x.ndim - 1) + [filter_width]
+    )
+    return filtered[..., pad:-pad]
 
 
 @numba.jit(nopython=True)
