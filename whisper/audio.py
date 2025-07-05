@@ -2,6 +2,7 @@ import os
 from functools import lru_cache
 from subprocess import CalledProcessError, run
 from typing import Optional, Union
+from scipy.signal import stft
 
 import numpy as np
 
@@ -126,18 +127,23 @@ def log_mel_spectrogram(
         audio = load_audio(audio)
     audio = np.array(audio)
 
-    if device is not None:
-        audio = audio.to(device)
     if padding > 0:
-        audio = pad(audio, (0, padding))
-    window = hann_window(N_FFT).to(audio.device)
-    stft = np.stft(audio, N_FFT, HOP_LENGTH, window=window, return_complex=True)
-    magnitudes = stft[..., :-1].abs() ** 2
+        audio = np.pad(audio, (0, padding))
+    window = np.hanning(N_FFT)
+    # Replace torch.stft with scipy.signal.stft
+    frequencies, times, stft_result = stft(audio, 
+                                        nperseg=N_FFT, 
+                                        noverlap=N_FFT - HOP_LENGTH,
+                                        window=window,
+                                        return_onesided=True)
+    # Calculate magnitudes (power spectrogram)
+    # Remove the last frequency bin to match original behavior
+    magnitudes = np.abs(stft_result) ** 2
 
     filters = mel_filters(audio.device, n_mels)
     mel_spec = filters @ magnitudes
 
-    log_spec = np.clamp(mel_spec, min=1e-10).log10()
+    log_spec = np.log10(np.maximum(mel_spec, 1e-10))
     log_spec = np.maximum(log_spec, log_spec.max() - 8.0)
     log_spec = (log_spec + 4.0) / 4.0
     return log_spec

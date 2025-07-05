@@ -51,10 +51,12 @@ def disable_sdpa():
 class Whisper:
     """A thin wrapper around an onnxruntime.InferenceSession."""
 
-    def __init__(self, session: onnxruntime.InferenceSession):
+    def __init__(self, session: onnxruntime.InferenceSession, dims: ModelDimensions):
+        self.dims = dims
         self.session = session
         self.is_multilingual = True
-        self.num_languages = 0
+        self.num_languages = 99
+        # self.decoder = self.session.decoder
 
     def set_alignment_heads(self, _dump: bytes) -> None:  # no-op for ONNX models
         return

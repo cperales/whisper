@@ -276,7 +276,8 @@ def transcribe(
             segment_size = min(N_FRAMES, content_frames - seek, seek_clip_end - seek)
             mel_segment = mel[:, seek : seek + segment_size]
             segment_duration = segment_size * HOP_LENGTH / SAMPLE_RATE
-            mel_segment = pad_or_trim(mel_segment, N_FRAMES).to(model.device).to(dtype)
+            print(f"dtype: {dtype}")
+            mel_segment = pad_or_trim(mel_segment, N_FRAMES).astype(dtype)
 
             if carry_initial_prompt:
                 nignored = max(len(initial_prompt_tokens), prompt_reset_since)

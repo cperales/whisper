@@ -142,8 +142,10 @@ class PyTorchInference(Inference):
         self.kv_cache = {}
         self.hooks = []
 
-        key_modules = [block.attn.key for block in self.model.decoder.blocks]
-        value_modules = [block.attn.value for block in self.model.decoder.blocks]
+        # key_modules = [block.attn.key for block in self.model.decoder.blocks]
+        # value_modules = [block.attn.value for block in self.model.decoder.blocks]
+        key_modules = list()
+        value_modules = list()
         self.kv_modules = key_modules + value_modules
 
     def logits(self, tokens: np.ndarray, audio_features: np.ndarray) -> np.ndarray:
@@ -636,9 +638,6 @@ class DecodingTask:
         return tuple(sorted(set(suppress_tokens)))
 
     def _get_audio_features(self, mel: np.ndarray):
-        if self.options.fp16:
-            mel = mel.half()
-
         if mel.shape[-2:] == (
             self.model.dims.n_audio_ctx,
             self.model.dims.n_audio_state,
@@ -801,7 +800,8 @@ def decode(
         The result(s) of decoding contained in `DecodingResult` dataclass instance(s)
     """
     if single := mel.ndim == 2:
-        mel = mel.unsqueeze(0)
+        # mel = mel.unsqueeze(0)
+        mel = np.expand_dims(mel, axis=0)
 
     if kwargs:
         options = replace(options, **kwargs)
